@@ -1,0 +1,4 @@
+http://195.251.117.145:8082
+extended.vision.encoded.frames
+tsiakmakis
+tsiakmakis
