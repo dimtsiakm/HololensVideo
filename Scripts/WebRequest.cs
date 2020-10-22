@@ -6,7 +6,6 @@ using CircularBuffer;
 using System.Runtime.InteropServices;
 using UnityEngine.UI;
 
-
 public class WebRequest : MonoBehaviour
 {
 
@@ -31,6 +30,14 @@ public class WebRequest : MonoBehaviour
 
     private Material mat;
     private Texture2D tex;
+
+    private UnityWebRequest req;
+    private UnityWebRequest webRequest;
+
+    private long total_time = 0;
+    private long total_time_producemessage = 0;
+    private long total_time_loadimage = 0;
+    private int total_photos = 0;
 
 
     /*
@@ -93,8 +100,9 @@ public class WebRequest : MonoBehaviour
         return ("{\"Items\":" + value + "}");
     }
 
-    void ProduceMessages(string json, long time)  
+    void ProduceMessages(string json, long time)
     {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             kafkaMessage[] msgs = JsonHelper.FromJson<kafkaMessage>(fixJson(json));
@@ -105,9 +113,20 @@ public class WebRequest : MonoBehaviour
             kafkaMessage msg = msgs[msgs.Length - 1];
 
             byte[] data = Convert.FromBase64String(msg.value);
-            
+
+
+
+            //*********************average time for LoadImage()****************************//
+            var watch_loadimage = System.Diagnostics.Stopwatch.StartNew();
+
             tex.LoadImage(data);
-            
+
+            watch_loadimage.Stop();
+            total_time_producemessage += watch_loadimage.ElapsedMilliseconds;
+            //*****************************************************************************//
+
+
+
             GetComponent<Renderer>().material.mainTexture = tex;
             mat = GetComponent<MeshRenderer>().material;
             mat.SetTexture("_MainTex", tex);
@@ -117,15 +136,14 @@ public class WebRequest : MonoBehaviour
         {
             print("Null Reference Exception :: " + e1.Message);
         }
+
+        //********************average time*******************//;
+        watch.Stop();
+        total_time_producemessage += watch.ElapsedMilliseconds;
     }
-
-
-    
-
 
     void StartCoroutineGetRequest()
     {
-        //print("Start Routine get request");
         StartCoroutine(GetRequest());
     }
 
@@ -180,9 +198,9 @@ public class WebRequest : MonoBehaviour
             setParametersKafka();//parameters
             StartCoroutine(SetConsumer());
 
-            tex = new Texture2D(2, 2);
+            tex = new Texture2D(2, 2, TextureFormat.RGB24, false);
 
-            InvokeRepeating("StartCoroutineGetRequest", (2f), 0.105f);
+            InvokeRepeating("StartCoroutineGetRequest", (2f), 0.11f);
             //InvokeRepeating("renderFrame", (2f), 0.09f);
             InvokeRepeating("GetFPS", (0f), 1.0f);
 
@@ -210,7 +228,6 @@ public class WebRequest : MonoBehaviour
         }
     }
 
-
     void GetFPS()
     {
         FPSText = GameObject.Find("FPS").GetComponent<Text>();
@@ -234,7 +251,7 @@ public class WebRequest : MonoBehaviour
         Button stopButton = GameObject.Find("Stop Button").GetComponent<Button>();
         stopButton.onClick.AddListener(StopVideo);
 
-
+        
     }
 
 
@@ -284,13 +301,58 @@ public class WebRequest : MonoBehaviour
     */
 
 
+
+
     IEnumerator GetRequest()
     {
-        //System.Diagnostics.Stopwatch stopWatch = new System.Diagnostics.Stopwatch();
-        //stopWatch.Start();
+        webRequest = UnityWebRequest.Get(instance_url() + "/records");
+        var watch = System.Diagnostics.Stopwatch.StartNew();
 
-        using (UnityWebRequest webRequest = UnityWebRequest.Get(instance_url() + "/records"))
+        webRequest.SetRequestHeader("Accept", "application/vnd.kafka.json.v2+json");
+        // Request and wait for the desired page.
+        yield return webRequest.SendWebRequest();
+
+        watch.Stop();
+
+        string json = webRequest.downloadHandler.text;
+        long time = watch.ElapsedMilliseconds;
+
+        if (json.Length > 2)
         {
+            ProduceMessages(json, time);
+        }
+
+        total_time += watch.ElapsedMilliseconds;
+        total_photos++;
+        print(total_photos);
+
+        if (total_photos == 20)
+        {
+            float avg_time = ((float) total_time / (float) total_photos);
+            float avg_time_producemessage = ((float)total_time_producemessage / (float)total_photos);
+            float avg_time_loadimage = ((float)total_time_loadimage / (float)total_photos);
+
+
+            Debug.LogWarning("500 photos : avg time for get request = " + avg_time);
+            Debug.LogWarning("500 photos : avg time for produce message function = " + avg_time_producemessage);
+            Debug.LogWarning("500 photos : avg time for tex.LoadImage(data) = " + avg_time_loadimage);
+
+
+
+            total_photos = 0;
+
+            total_time = 0;
+            total_time_producemessage = 0;
+            total_time_loadimage = 0;
+
+            StopVideo();
+        }
+
+
+        /*
+        using (webRequest = UnityWebRequest.Get(instance_url() + "/records"))
+        {
+            
             var watch = System.Diagnostics.Stopwatch.StartNew();
 
             webRequest.SetRequestHeader("Accept", "application/vnd.kafka.json.v2+json");
@@ -307,7 +369,8 @@ public class WebRequest : MonoBehaviour
                 ProduceMessages(json,time);
             }
         }
-        
+        */
+
     }
 
     
@@ -319,7 +382,7 @@ public class WebRequest : MonoBehaviour
         
         string data = "{\"name\": \"" + instance_name + "\", \"format\": \"json\", \"auto.offset.reset\": \"latest\", \"consumer.request.timeout.ms\": \"5\"}";
 
-        using (UnityWebRequest req = UnityWebRequest.Put(consumer_url(), data))
+        using (req = UnityWebRequest.Put(consumer_url(), data))
         {
             Debug.Log("Start ( create consumer : " + consumer_name + " ).");
 
@@ -334,7 +397,7 @@ public class WebRequest : MonoBehaviour
 
         //subscribe to topic
         data = "{\"topics\":[\""+ topic_name + "\"]}";
-        using (UnityWebRequest req = UnityWebRequest.Put(instance_url() + "/subscription", data))
+        using (req = UnityWebRequest.Put(instance_url() + "/subscription", data))
         {
             Debug.Log("Start ( subscribe ).");
 
@@ -347,7 +410,7 @@ public class WebRequest : MonoBehaviour
         //seek to beggining
         
         string partitions = "{\"partitions\": [{\"topic\":\"" + topic_name + "\", \"partition\": 0}]}";
-        using (UnityWebRequest req = UnityWebRequest.Put(instance_url() + "/positions/end", partitions))
+        using (req = UnityWebRequest.Put(instance_url() + "/positions/end", partitions))
         {
             UnityEngine.Debug.Log("seek to end");
 
