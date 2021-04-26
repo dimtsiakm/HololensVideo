@@ -80,7 +80,7 @@ public class DecodedVideoFrames : MonoBehaviour
         Marshal.Copy(structDecodedImage.data, buffer, 0, len);
         handle.Free();
 
-        tex.SetPixelData(buffer, 0);
+        tex.LoadImage(buffer);
         tex.Apply();
         GetComponent<Renderer>().material.mainTexture = tex;
         mat = GetComponent<MeshRenderer>().material;

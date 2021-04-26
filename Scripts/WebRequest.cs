@@ -16,9 +16,9 @@ public class WebRequest : MonoBehaviour
         public int end_offset;
     }
 
-    private int counter = 0;
+    //private int counter = 0;
     private int number_5 = 0;
-    private int FRAME_RATE_DIV = 1;
+    //private int FRAME_RATE_DIV = 1;
 
     private string topic_name;
     private string instance_name;
@@ -35,12 +35,13 @@ public class WebRequest : MonoBehaviour
     private UnityWebRequest webRequest;
 
     private long total_time = 0;
+    private long total_time_getrequest = 0;
     private long total_time_producemessage = 0;
     private long total_time_loadimage = 0;
     private int total_photos = 0;
 
 
-    /*
+    
     [StructLayout(LayoutKind.Sequential, Pack = 1, CharSet = CharSet.Ansi)]
     private struct s_dimension
     {
@@ -56,19 +57,17 @@ public class WebRequest : MonoBehaviour
         public int width;
         public int height;
     }
-    */
-    /*
     private int index = 0;
     private byte[] buffer;
     private int buffer_size;
     private bool hasInit = false;
-    */
+    
 
     private bool isVideoPlay = false;
 
-    //private s_dimension dimension;
+    private s_dimension dimension;
 
-    /*
+    
     [DllImport("Decoder", CallingConvention = CallingConvention.Cdecl)]
     public static extern IntPtr init(IntPtr data, int length);
 
@@ -77,13 +76,13 @@ public class WebRequest : MonoBehaviour
 
     [DllImport("Decoder", CallingConvention = CallingConvention.Cdecl)]
     public static extern void clear();
-    */
+    
 
     private int frames = 0; 
 
-    //private const int CIRCULAR_BUFFER_CAPACITY = 300;
+    private const int CIRCULAR_BUFFER_CAPACITY = 300;
     
-    //private CircularBuffer<kafkaMessage> cb = new CircularBuffer<kafkaMessage>(CIRCULAR_BUFFER_CAPACITY);
+    private CircularBuffer<kafkaMessage> cb = new CircularBuffer<kafkaMessage>(CIRCULAR_BUFFER_CAPACITY);
     
     string consumer_url()
     {
@@ -102,7 +101,6 @@ public class WebRequest : MonoBehaviour
 
     void ProduceMessages(string json, long time)
     {
-        var watch = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             kafkaMessage[] msgs = JsonHelper.FromJson<kafkaMessage>(fixJson(json));
@@ -114,19 +112,6 @@ public class WebRequest : MonoBehaviour
 
             byte[] data = Convert.FromBase64String(msg.value);
 
-
-
-            //*********************average time for LoadImage()****************************//
-            var watch_loadimage = System.Diagnostics.Stopwatch.StartNew();
-
-            tex.LoadImage(data);
-
-            watch_loadimage.Stop();
-            total_time_producemessage += watch_loadimage.ElapsedMilliseconds;
-            //*****************************************************************************//
-
-
-
             GetComponent<Renderer>().material.mainTexture = tex;
             mat = GetComponent<MeshRenderer>().material;
             mat.SetTexture("_MainTex", tex);
@@ -136,10 +121,6 @@ public class WebRequest : MonoBehaviour
         {
             print("Null Reference Exception :: " + e1.Message);
         }
-
-        //********************average time*******************//;
-        watch.Stop();
-        total_time_producemessage += watch.ElapsedMilliseconds;
     }
 
     void StartCoroutineGetRequest()
@@ -186,6 +167,7 @@ public class WebRequest : MonoBehaviour
         }
     }
     */
+    
 
     void PlayVideo()
     {
@@ -312,7 +294,7 @@ public class WebRequest : MonoBehaviour
         // Request and wait for the desired page.
         yield return webRequest.SendWebRequest();
 
-        watch.Stop();
+        total_time_getrequest += watch.ElapsedMilliseconds;//time for get request
 
         string json = webRequest.downloadHandler.text;
         long time = watch.ElapsedMilliseconds;
@@ -322,65 +304,15 @@ public class WebRequest : MonoBehaviour
             ProduceMessages(json, time);
         }
 
+        watch.Stop();
         total_time += watch.ElapsedMilliseconds;
+
         total_photos++;
-        print(total_photos);
-
-        if (total_photos == 20)
-        {
-            float avg_time = ((float) total_time / (float) total_photos);
-            float avg_time_producemessage = ((float)total_time_producemessage / (float)total_photos);
-            float avg_time_loadimage = ((float)total_time_loadimage / (float)total_photos);
-
-
-            Debug.LogWarning("500 photos : avg time for get request = " + avg_time);
-            Debug.LogWarning("500 photos : avg time for produce message function = " + avg_time_producemessage);
-            Debug.LogWarning("500 photos : avg time for tex.LoadImage(data) = " + avg_time_loadimage);
-
-
-
-            total_photos = 0;
-
-            total_time = 0;
-            total_time_producemessage = 0;
-            total_time_loadimage = 0;
-
-            StopVideo();
-        }
-
-
-        /*
-        using (webRequest = UnityWebRequest.Get(instance_url() + "/records"))
-        {
-            
-            var watch = System.Diagnostics.Stopwatch.StartNew();
-
-            webRequest.SetRequestHeader("Accept", "application/vnd.kafka.json.v2+json");
-            // Request and wait for the desired page.
-            yield return webRequest.SendWebRequest();
-
-            watch.Stop();
-
-            string json = webRequest.downloadHandler.text;
-            long time = watch.ElapsedMilliseconds;
-
-            if(json.Length > 2)
-            {
-                ProduceMessages(json,time);
-            }
-        }
-        */
-
     }
-
-    
-
-
 
     IEnumerator SetConsumer()
     {
-        
-        string data = "{\"name\": \"" + instance_name + "\", \"format\": \"json\", \"auto.offset.reset\": \"latest\", \"consumer.request.timeout.ms\": \"5\"}";
+        string data = "{\"name\": \"" + instance_name + "\", \"format\": \"json\", \"auto.offset.reset\": \"latest\", \"consumer.request.timeout.ms\": \"0\"}";
 
         using (req = UnityWebRequest.Put(consumer_url(), data))
         {
@@ -405,10 +337,9 @@ public class WebRequest : MonoBehaviour
             req.SetRequestHeader("Content-Type","application/vnd.kafka.v2+json");
             yield return req.SendWebRequest();
 
-            Debug.Log("Completed ( subscribe ): " + req.downloadHandler.text);
+            Debug.Log("Completed (subscribe): " + req.downloadHandler.text);
         }
-        //seek to beggining
-        
+        //seek to end/beggining
         string partitions = "{\"partitions\": [{\"topic\":\"" + topic_name + "\", \"partition\": 0}]}";
         using (req = UnityWebRequest.Put(instance_url() + "/positions/end", partitions))
         {
@@ -471,11 +402,44 @@ public class WebRequest : MonoBehaviour
         public long offset;
         public string topic;
     }
+
+
+    private void average_times()
+    {
+        print(total_photos);
+
+        if (total_photos == 1000)
+        {
+            float avg_time_getrequest = ((float)total_time_getrequest / (float)total_photos);
+            float avg_time_producemessage = ((float)total_time_producemessage / (float)total_photos);
+            float avg_time_loadimage = ((float)total_time_loadimage / (float)total_photos);
+            float avg_time = ((float)total_time / (float)total_photos);
+
+
+            Debug.LogWarning("150 photos : avg time for get request = " + avg_time_getrequest);
+            Debug.LogWarning("150 photos : avg time for produce message function = " + avg_time_producemessage);
+            Debug.LogWarning("150 photos : avg time for tex.LoadImage(data) = " + avg_time_loadimage);
+            Debug.LogWarning("150 photos : Total average time = " + avg_time);
+
+            GameObject.Find("Seeking").GetComponent<Text>().text = "150 photos : avg time for get request = " + avg_time_getrequest +
+            "\n150 photos : avg time for produce message function = " + avg_time_producemessage +
+            "\n150 photos : avg time for tex.LoadImage(data) = " + avg_time_loadimage +
+            "\n150 photos : Total average time = " + avg_time;
+
+            total_photos = 0;
+
+            total_time = 0;
+            total_time_getrequest = 0;
+            total_time_producemessage = 0;
+            total_time_loadimage = 0;
+
+            StopVideo();
+        }
+    }
+
+
+
 }
-
-
-
-
 /*
     private bool decoder_init()
     {
@@ -618,4 +582,5 @@ bool decode_frame()
     }
 }
 */
+
 
