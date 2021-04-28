@@ -12,6 +12,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Linq;
 
+//using System.Diagnostics;
 public class SocketStreaming : MonoBehaviour
 {
     private Material mat;
@@ -40,7 +41,6 @@ public class SocketStreaming : MonoBehaviour
     [StructLayout(LayoutKind.Sequential, Pack = 1, CharSet = CharSet.Ansi)]
     private struct sYUVplanes
     {
-        public IntPtr avframe;
         public IntPtr Y;
         public IntPtr U;
         public IntPtr V;
@@ -48,19 +48,29 @@ public class SocketStreaming : MonoBehaviour
 
     private byte[] buffer;
     private bool hasInit = false;
+    private bool startRender = false;
+    private bool hasRenderInit = false;
 
     private s_dimension dimension;
 
     private Socket receiver = null;
-    private static Mutex mutex = new Mutex();
-    private CircularBuffer<IntPtr> circularBuffer = new CircularBuffer<IntPtr>(100);
+    public Mutex mutex;
+    //private CircularBuffer<IntPtr> circularBuffer = new CircularBuffer<IntPtr>(100);
+    private IntPtr YUVpointers;
+
+    sYUVplanes yuvPlanes;
+    System.Diagnostics.Stopwatch watch;
+    int imageSize;
+    float total_time;
+    private SemaphoreSlim semaphore = new SemaphoreSlim(1, 1);
+    Thread OpenAndShowSavedFramesThread;
+    Thread StartClientAsyncThread;
 
     private static bool HARDWARE_ACCELERATION;
 
     private static string host = "2.85.228.157";
     private static int port = 40000;
     private byte[] iFrameHeaderTemplate = new byte[] { 0x00, 0x00, 0x00, 0x01, 0x67, 0x42 };
-    int pImageSize;
     int i = 90;
     private IntPtr pImage;
 
@@ -75,8 +85,7 @@ public class SocketStreaming : MonoBehaviour
     [DllImport("Decoder", CallingConvention = CallingConvention.Cdecl)]
     public static extern int test(int a, int b);
     [DllImport("Decoder", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void unref_yuvPlanes_structure(IntPtr yuvPlane);
-
+    public static extern void unref_YUVPlanes_structure(IntPtr avframe);
     private bool decoder_init(byte[] data)
     {
         var handle = GCHandle.Alloc(data, GCHandleType.Pinned);
@@ -129,41 +138,60 @@ public class SocketStreaming : MonoBehaviour
         if (pointer == IntPtr.Zero)
         {
             Debug.Log("returned null pointer from decoding (check frame and feed again dll function)");
-            return pointer;
         }
         return pointer;
     }
     public async void OpenAndShowSavedFrames()
     {
-        if (i == 100)
+        while (true)
         {
-            i = 90;
-        }
-        byte[] frame = File.ReadAllBytes("D:\\" + i.ToString());
+            if (i >= 100)
+            {
+                i = 90;
+            }
+            byte[] frame = File.ReadAllBytes("D:\\" + i.ToString());
 
-        if (iFrameHeaderTemplate.SequenceEqual(frame.Take(6)))
-        {
-            string hex = BitConverter.ToString(frame.Take(10).ToArray());
-            Debug.Log("First 10 bytes in hex format [before] preprocessing is :" + hex);
-            //0x80 -> 0xC0 header byte (constraint_set1_flag must be 1)
-            Buffer.SetByte(frame, 6, 0xC0);
-            hex = BitConverter.ToString(frame.Take(10).ToArray());
-            Debug.Log("First 10 bytes in hex format [after] preprocessing is :" + hex);
-        }
+            if (iFrameHeaderTemplate.SequenceEqual(frame.Take(6)))
+            {
+                string hex = BitConverter.ToString(frame.Take(10).ToArray());
+                Debug.Log("First 10 bytes in hex format [before] preprocessing is :" + hex);
+                //0x80 -> 0xC0 header byte (constraint_set1_flag must be 1)
+                Buffer.SetByte(frame, 6, 0xC0);
+                hex = BitConverter.ToString(frame.Take(10).ToArray());
+                Debug.Log("First 10 bytes in hex format [after] preprocessing is :" + hex);
+            }
 
-        var watch = System.Diagnostics.Stopwatch.StartNew();
-        IntPtr image = await Task.Run(() => decode_frame(frame));
-        watch.Stop();
-        float total_time = watch.ElapsedMilliseconds;
-        Debug.Log("Decoding time over dll is : " + total_time);
+            await semaphore.WaitAsync();
+            try
+            {
+                watch = System.Diagnostics.Stopwatch.StartNew();
 
-        i++;
-        if(image != IntPtr.Zero)
-        {
-            mutex.WaitOne();//mutex blocks
-            circularBuffer.PushBack(image);
-            mutex.ReleaseMutex();//mutex released
+                IntPtr image = await Task.Run(() => decode_frame(frame));
+
+                watch.Stop();
+                total_time = watch.ElapsedMilliseconds;
+                Debug.Log("Decoding time over dll is : " + total_time);
+
+                if (image != IntPtr.Zero)
+                {
+                    YUVpointers = image;
+                }
+            }
+            finally
+            {
+                semaphore.Release();
+            }
+                        
+            if (!startRender)
+                startRender = true;
+            i++;
+            Thread.Sleep(800);
         }
+    }
+    private void StartOpenAndShowSavedFrames()
+    {
+        OpenAndShowSavedFramesThread = new Thread(OpenAndShowSavedFrames);
+        OpenAndShowSavedFramesThread.Start();
     }
     public async void StartClientAsync()
     {
@@ -196,19 +224,24 @@ public class SocketStreaming : MonoBehaviour
                             //0x80 -> 0xC0 header byte (constraint_set1_flag must be 1)
                             Buffer.SetByte(frame, 6, 0xC0);
                         }
-
-                        //File.WriteAllBytes("./Assets/FramesPieces/3" + frame_index, frame);
+                        await semaphore.WaitAsync();
+                        try
+                        {
+                            //watch = System.Diagnostics.Stopwatch.StartNew();
+                            IntPtr pImage = await Task.Run(() => decode_frame(frame));
+                            YUVpointers = pImage;
+                            
+                            //watch.Stop();
+                            //total_time = watch.ElapsedMilliseconds;
+                            //Debug.Log("Decoding time over dll is : " + total_time);
+                        }
+                        finally
+                        {
+                            semaphore.Release();
+                        }
+                        if (!startRender)
+                            startRender = true;
                         size = br.ReadInt32();
-
-                        var watch = System.Diagnostics.Stopwatch.StartNew();
-                        IntPtr pImage = await Task.Run(() => decode_frame(frame));
-                        watch.Stop();
-                        float total_time = watch.ElapsedMilliseconds;
-                        Debug.Log("Decoding time over dll is : " + total_time);
-
-                        mutex.WaitOne();//mutex blocks
-                        circularBuffer.PushBack(pImage);
-                        mutex.ReleaseMutex();//mutex released
                     }
                 }
                 receiver.Shutdown(SocketShutdown.Both);
@@ -217,34 +250,40 @@ public class SocketStreaming : MonoBehaviour
             catch (ArgumentNullException ane)
             {
                 Debug.Log("ArgumentNullException : " + ane.ToString());
+                mutex.ReleaseMutex();
             }
             catch (SocketException se)
             {
                 Debug.Log("SocketException : " + se.ToString());
+                mutex.ReleaseMutex();
             }
             catch (Exception e)
             {
                 Debug.Log("Unexpected exception : " + e.ToString());
+                mutex.ReleaseMutex();
             }
         }
         catch (Exception e)
         {
             Console.WriteLine(e.ToString());
+            mutex.ReleaseMutex();
         }
     }
     private void StartClientThread()
     {
-        var th1 = new Thread(StartClientAsync);
-        th1.Start();
+        StartClientAsyncThread = new Thread(StartClientAsync);
+        StartClientAsyncThread.Start();
     }
     void OnApplicationQuit()
     {
-        if(receiver != null)
+        CancelInvoke();
+        if (receiver != null)
         {
             receiver.Shutdown(SocketShutdown.Both);
             receiver.Close();
         }
-        CancelInvoke();
+        Thread.Sleep(250);
+        semaphore.Dispose();
     }
     void UnloadDirties()
     {
@@ -253,70 +292,45 @@ public class SocketStreaming : MonoBehaviour
     void Start()
     {
         HARDWARE_ACCELERATION = false;
-        Invoke("StartClientThread", 0f);
-        //Invoke("OpenAndShowSavedFrames", 0f);
+        //Invoke("StartClientThread", 0f);
+        Invoke("StartOpenAndShowSavedFrames", 0f);
         //Invoke("RenderFrame", 0.033f);
-        InvokeRepeating("OpenAndShowSavedFrames", 2f, 0.035f);
-        InvokeRepeating("RenderFrame", 0f, 0.033f);
-        //InvokeRepeating("UnloadDirties", 0f, 5f);
+        InvokeRepeating("RenderFrame", 0f, 0.07f); //~14,2fps
         //print_hardware_device_support();
     }
     void Update()
     {
-        /*
-        if(frames_number == 300)
-        {
-            Debug.Log("Mean time is : " + (int)(total_time_sum / frames_number));
-        }
 
-        var watch = System.Diagnostics.Stopwatch.StartNew();
-
-        var w = System.Diagnostics.Stopwatch.StartNew();
-        int k = test(1, 2);
-        //Debug.Log("k = " + k);
-        w.Stop();
-        float total_time1 = w.ElapsedMilliseconds;
-        Debug.Log("dump debug.log : " + total_time1 + "" + k);
-        watch.Stop();
-        float total_time = watch.ElapsedMilliseconds;
-        Debug.Log("Call function from dll [time] : " + total_time +" with k = " + k);
-        */
     }
     private void RenderFrame()
     {
-        if (hasInit)
+        if (!hasRenderInit && startRender)
         {
-            pImageSize = (int)(dimension.width * dimension.height * 1.5f);//YUV420
+            imageSize = (dimension.width * dimension.height);//YUV420
             tex = new Texture2D(dimension.width, dimension.height, TextureFormat.R8, false);
 
             m_YImageTex = new Texture2D(dimension.width, dimension.height, TextureFormat.Alpha8, false);
             m_UImageTex = new Texture2D(dimension.width >> 1, dimension.height >> 1, TextureFormat.Alpha8, false);
             m_VImageTex = new Texture2D(dimension.width >> 1, dimension.height >> 1, TextureFormat.Alpha8, false);
-        }
-        if (!circularBuffer.IsEmpty)
-        {
-            mutex.WaitOne();//mutex blocks
-            pImage = circularBuffer.Front();
-            circularBuffer.PopFront();
-            mutex.ReleaseMutex(); //mutex released
-
-            var watch = System.Diagnostics.Stopwatch.StartNew();
-
-            sYUVplanes yuvPlanes = new sYUVplanes();
-            yuvPlanes = (sYUVplanes)Marshal.PtrToStructure(pImage, typeof(sYUVplanes));
-
-            //pY, pU, pV :: pointers
-            //pY[........Y........]pU[....U....]pV[....V....]
-            //  |<-------1------->|  |<--1/4-->|  |<--1/4-->|
+            yuvPlanes = new sYUVplanes();
 
             GetComponent<Renderer>().material.mainTexture = m_YImageTex;
             mat = GetComponent<MeshRenderer>().material;
+            yuvPlanes = (sYUVplanes)Marshal.PtrToStructure(YUVpointers, typeof(sYUVplanes));
+            hasRenderInit = true;
+        }
+        if (startRender)
+        {
+            semaphore.WaitAsync();
+            //watch = System.Diagnostics.Stopwatch.StartNew();
 
-            int s = dimension.width * dimension.height;
-
-            m_YImageTex.LoadRawTextureData(yuvPlanes.Y, s);
-            m_UImageTex.LoadRawTextureData(yuvPlanes.U, s / 4);
-            m_VImageTex.LoadRawTextureData(yuvPlanes.V, (s / 4));
+            //pY, pU, pV :: pointers
+            //pY[........Y........]pU[..U..]pV[..V..]
+            //  |<-------1------->|  |<1/4>|  |<1/4>|
+            
+            m_YImageTex.LoadRawTextureData(yuvPlanes.Y, imageSize);
+            m_UImageTex.LoadRawTextureData(yuvPlanes.U, imageSize / 4);
+            m_VImageTex.LoadRawTextureData(yuvPlanes.V, imageSize / 4);
             m_YImageTex.Apply();
             m_UImageTex.Apply();
             m_VImageTex.Apply();
@@ -324,13 +338,11 @@ public class SocketStreaming : MonoBehaviour
             mat.SetTexture("_MainTex", m_YImageTex);
             mat.SetTexture("_UTex", m_UImageTex);
             mat.SetTexture("_VTex", m_VImageTex);
+            semaphore.Release();
 
-            unref_yuvPlanes_structure(pImage);//unref sYUVPlanes structure, as well as AVFrame* memory
-
-            watch.Stop();
-            float total_time = watch.ElapsedMilliseconds;
-            Debug.Log("Rendering time in current frame is : " + total_time);
-            //#endregion
+            //watch.Stop();
+            //total_time = watch.ElapsedMilliseconds;
+            //Debug.Log("Rendering time in current frame is : " + total_time);
         }
     }
     private void print_hardware_device_support()
